@@ -1,0 +1,94 @@
+name: Build Samsung Galaxy Tab A9 Kernel
+
+"on":
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout kernel source
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc \
+            bison \
+            flex \
+            build-essential \
+            clang \
+            lld \
+            libssl-dev \
+            libelf-dev \
+            pahole \
+            cpio \
+            zip \
+            unzip \
+            python3 \
+            rsync \
+            git
+
+      - name: Check kernel source
+        run: |
+          echo "Checking kernel source..."
+          test -f Makefile
+          find . -maxdepth 3 -type f \
+            \( -name "defconfig" -o -name "*defconfig" \) \
+            | head -30
+
+      - name: Find kernel configuration
+        run: |
+          set -eux
+
+          DEFCONFIG=""
+
+          for file in \
+            arch/arm64/configs/gta9_defconfig \
+            arch/arm64/configs/gta9wifi_defconfig \
+            arch/arm64/configs/vendor/gta9_defconfig \
+            arch/arm64/configs/vendor/gta9wifi_defconfig
+          do
+            if [ -f "$file" ]; then
+              DEFCONFIG="$file"
+              break
+            fi
+          done
+
+          if [ -z "$DEFCONFIG" ]; then
+            echo "Defconfig tidak ditemukan."
+            echo "Daftar defconfig yang tersedia:"
+            find arch/arm64/configs -type f \
+              | grep -Ei 'gta9|x110|sm.?x110|defconfig' \
+              | head -100
+            exit 1
+          fi
+
+          echo "DEFCONFIG=$DEFCONFIG" >> "$GITHUB_ENV"
+          echo "Menggunakan: $DEFCONFIG"
+
+      - name: Build kernel Image
+        run: |
+          set -eux
+
+          make O=out ARCH=arm64 "$DEFCONFIG"
+
+          make -j"$(nproc)" \
+            O=out \
+            ARCH=arm64 \
+            LLVM=1 \
+            LLVM_IAS=1
+
+          test -f out/arch/arm64/boot/Image
+
+      - name: Upload Image
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-image
+          path: out/arch/arm64/boot/Image
+          if-no-files-found: error
