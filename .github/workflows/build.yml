@@ -1,12 +1,139 @@
-name: Test Build
+name: Build Kernel - Samsung X110
 
 on:
   workflow_dispatch:
 
 jobs:
-  test:
-    runs-on: ubuntu-latest
+  build:
+    runs-on: ubuntu-22.04
 
     steps:
-      - name: Test workflow
-        run: echo "Workflow aktif dan siap digunakan"
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            libncurses-dev \
+            bison \
+            flex \
+            libssl-dev \
+            libelf-dev \
+            bc \
+            git \
+            wget \
+            curl \
+            ccache \
+            rsync \
+            kmod \
+            cpio \
+            python3 \
+            lz4 \
+            gcc-aarch64-linux-gnu \
+            gcc-arm-linux-gnueabi
+
+      - name: Download Clang Toolchain
+        run: |
+          echo "Downloading Proton Clang..."
+          git clone --depth=1 \
+            https://github.com/kdrag0n/proton-clang.git \
+            clang
+
+      - name: Check Kernel Source
+        run: |
+          echo "=== Kernel source ==="
+          pwd
+          echo "=== Kernel version ==="
+          head -n 8 Makefile
+          echo "=== GTA9 configs ==="
+          ls -lh arch/arm64/configs/*gta9*
+
+      - name: Inject KernelSU
+        run: |
+          set -e
+
+          echo "=== Cleaning old KernelSU ==="
+          rm -rf drivers/kernelsu
+
+          sed -i '/drivers\/kernelsu\/Kconfig/d' drivers/Kconfig
+          sed -i '/obj-.*kernelsu/d' drivers/Makefile
+
+          echo "=== Download KernelSU ==="
+          git clone --depth=1 \
+            https://github.com/tiann/KernelSU.git \
+            /tmp/KernelSU
+
+          echo "=== Link KernelSU ==="
+          ln -s /tmp/KernelSU/kernel drivers/kernelsu
+
+          echo "=== Register KernelSU ==="
+          echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
+          echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
+
+          echo "=== Verify KernelSU ==="
+          test -f drivers/kernelsu/Kconfig
+          test -f drivers/kernelsu/Makefile
+
+          echo "KernelSU successfully injected."
+
+      - name: Prepare Defconfig
+        run: |
+          set -e
+
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export PATH="$PWD/clang/bin:$PATH"
+
+          echo "=== Using GTA9 defconfig ==="
+          make gta9_00_defconfig
+
+          echo "=== Enable KernelSU ==="
+          ./scripts/config --enable CONFIG_KSU
+
+          echo "=== KernelSU configuration ==="
+          grep '^CONFIG_KSU=' .config || true
+
+      - name: Build Kernel
+        run: |
+          set -e
+
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export PATH="$PWD/clang/bin:$PATH"
+
+          export CC=clang
+          export LLVM=1
+          export LLVM_IAS=1
+
+          echo "=== Starting kernel build ==="
+
+          make -j"$(nproc)" \
+            CC=clang \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            Image.gz \
+            dtbs
+
+      - name: Show Build Output
+        if: always()
+        run: |
+          echo "=== Kernel output ==="
+          ls -lh arch/arm64/boot/ || true
+
+          echo "=== DTB output ==="
+          find arch/arm64/boot/dts -type f \
+            \( -name "*.dtb" -o -name "*.dtbo" \) \
+            -exec ls -lh {} \; || true
+
+      - name: Upload Kernel Artifacts
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: samsung-x110-kernel-kernelsu
+          path: |
+            arch/arm64/boot/Image
+            arch/arm64/boot/Image.gz
+            arch/arm64/boot/dts/**/*.dtb
+            arch/arm64/boot/dts/**/*.dtbo
