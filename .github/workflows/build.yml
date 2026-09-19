@@ -8,12 +8,16 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
+
       - name: Checkout Repository
         uses: actions/checkout@v4
 
       - name: Install Dependencies
         run: |
+          set -e
+
           sudo apt-get update
+
           sudo apt-get install -y \
             build-essential \
             libncurses-dev \
@@ -36,104 +40,383 @@ jobs:
 
       - name: Download Clang Toolchain
         run: |
-          echo "Downloading Proton Clang..."
+          set -e
+
+          echo "=== Download Proton Clang ==="
+
           git clone --depth=1 \
             https://github.com/kdrag0n/proton-clang.git \
-            clang
+            "$GITHUB_WORKSPACE/clang"
 
-      - name: Check Kernel Source
+          echo "=== Clang ==="
+
+          "$GITHUB_WORKSPACE/clang/bin/clang" --version
+
+      - name: Find Kernel Source
         run: |
-          echo "=== Kernel source ==="
+          set -e
+
+          echo "======================================"
+          echo " SEARCHING KERNEL SOURCE"
+          echo "======================================"
+
+          echo "Workspace:"
           pwd
-          echo "=== Kernel version ==="
-          head -n 8 Makefile
-          echo "=== GTA9 configs ==="
-          ls -lh arch/arm64/configs/*gta9*
+
+          echo
+          echo "Repository files:"
+          ls -la
+
+          echo
+          echo "Searching for kernel Makefile..."
+
+          KERNEL_DIR=""
+
+          if [ -f "Makefile" ] && [ -d "arch" ] && [ -d "drivers" ]; then
+            KERNEL_DIR="$GITHUB_WORKSPACE"
+          fi
+
+          if [ -z "$KERNEL_DIR" ] && [ -f "kernel-5.10/Makefile" ]; then
+            KERNEL_DIR="$GITHUB_WORKSPACE/kernel-5.10"
+          fi
+
+          if [ -z "$KERNEL_DIR" ] && [ -f "kernel_source/Makefile" ]; then
+            KERNEL_DIR="$GITHUB_WORKSPACE/kernel_source"
+          fi
+
+          if [ -z "$KERNEL_DIR" ]; then
+            FOUND=$(find "$GITHUB_WORKSPACE" \
+              -maxdepth 4 \
+              -type f \
+              -name Makefile \
+              -path "*/arch/arm64/*" \
+              -print -quit || true)
+
+            if [ -n "$FOUND" ]; then
+              KERNEL_DIR="$(dirname "$(dirname "$(dirname "$FOUND")")")"
+            fi
+          fi
+
+          if [ -z "$KERNEL_DIR" ]; then
+            echo "ERROR: Kernel source tidak ditemukan."
+            echo
+            echo "Makefile yang ditemukan:"
+            find "$GITHUB_WORKSPACE" \
+              -maxdepth 4 \
+              -type f \
+              -name Makefile \
+              -print || true
+            exit 1
+          fi
+
+          echo
+          echo "======================================"
+          echo " KERNEL SOURCE FOUND"
+          echo "======================================"
+          echo "$KERNEL_DIR"
+
+          echo "$KERNEL_DIR" > "$GITHUB_WORKSPACE/kernel_dir.txt"
+
+          echo
+          echo "Kernel directory:"
+          ls -la "$KERNEL_DIR"
+
+          echo
+          echo "Kernel Makefile:"
+          head -n 10 "$KERNEL_DIR/Makefile"
+
+      - name: Check GTA9 Configuration
+        run: |
+          set -e
+
+          KERNEL_DIR="$(cat "$GITHUB_WORKSPACE/kernel_dir.txt")"
+
+          cd "$KERNEL_DIR"
+
+          echo "======================================"
+          echo " GTA9 CONFIGURATION"
+          echo "======================================"
+
+          echo
+          echo "Available GTA9 configs:"
+
+          find arch/arm64/configs \
+            -maxdepth 1 \
+            -type f \
+            -iname "*gta9*" \
+            -print \
+            | sort
+
+          echo
+          echo "Checking gta9_00_defconfig..."
+
+          if [ ! -f "arch/arm64/configs/gta9_00_defconfig" ]; then
+            echo "ERROR: gta9_00_defconfig tidak ditemukan."
+            exit 1
+          fi
+
+          echo
+          echo "gta9_00_defconfig ditemukan."
 
       - name: Inject KernelSU
         run: |
           set -e
 
-          echo "=== Cleaning old KernelSU ==="
+          KERNEL_DIR="$(cat "$GITHUB_WORKSPACE/kernel_dir.txt")"
+
+          cd "$KERNEL_DIR"
+
+          echo "======================================"
+          echo " KERNELSU SETUP"
+          echo "======================================"
+
+          echo
+          echo "Kernel source:"
+          pwd
+
+          echo
+          echo "Removing old KernelSU..."
+
           rm -rf drivers/kernelsu
 
-          sed -i '/drivers\/kernelsu\/Kconfig/d' drivers/Kconfig
-          sed -i '/obj-.*kernelsu/d' drivers/Makefile
+          sed -i '/drivers\/kernelsu\/Kconfig/d' drivers/Kconfig || true
+          sed -i '/obj-.*kernelsu/d' drivers/Makefile || true
+          sed -i '/obj-y += kernelsu/d' drivers/Makefile || true
 
-          echo "=== Download KernelSU ==="
+          echo
+          echo "Downloading KernelSU..."
+
+          rm -rf /tmp/KernelSU
+
           git clone --depth=1 \
             https://github.com/tiann/KernelSU.git \
             /tmp/KernelSU
 
-          echo "=== Link KernelSU ==="
+          echo
+          echo "Installing KernelSU..."
+
           ln -s /tmp/KernelSU/kernel drivers/kernelsu
 
-          echo "=== Register KernelSU ==="
-          echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
-          echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
+          echo
+          echo "Registering KernelSU Kconfig..."
 
-          echo "=== Verify KernelSU ==="
+          echo 'source "drivers/kernelsu/Kconfig"' \
+            >> drivers/Kconfig
+
+          echo
+          echo "Registering KernelSU Makefile..."
+
+          echo 'obj-$(CONFIG_KSU) += kernelsu/' \
+            >> drivers/Makefile
+
+          echo
+          echo "Verifying KernelSU..."
+
           test -f drivers/kernelsu/Kconfig
           test -f drivers/kernelsu/Makefile
 
-          echo "KernelSU successfully injected."
+          echo
+          echo "KernelSU Kconfig:"
+          ls -lh drivers/kernelsu/Kconfig
 
-      - name: Prepare Defconfig
+          echo
+          echo "KernelSU Makefile:"
+          ls -lh drivers/kernelsu/Makefile
+
+          echo
+          echo "KernelSU setup complete."
+
+      - name: Prepare Build Environment
         run: |
           set -e
 
-          export ARCH=arm64
-          export SUBARCH=arm64
-          export PATH="$PWD/clang/bin:$PATH"
+          KERNEL_DIR="$(cat "$GITHUB_WORKSPACE/kernel_dir.txt")"
 
-          echo "=== Using GTA9 defconfig ==="
-          make gta9_00_defconfig
+          cd "$KERNEL_DIR"
 
-          echo "=== Enable KernelSU ==="
-          ./scripts/config --enable CONFIG_KSU
-
-          echo "=== KernelSU configuration ==="
-          grep '^CONFIG_KSU=' .config || true
-
-      - name: Build Kernel
-        run: |
-          set -e
+          echo "======================================"
+          echo " BUILD ENVIRONMENT"
+          echo "======================================"
 
           export ARCH=arm64
           export SUBARCH=arm64
-          export PATH="$PWD/clang/bin:$PATH"
+
+          export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
 
           export CC=clang
           export LLVM=1
           export LLVM_IAS=1
 
-          echo "=== Starting kernel build ==="
+          echo "ARCH=$ARCH"
+          echo "SUBARCH=$SUBARCH"
+          echo "CC=$CC"
 
-          make -j"$(nproc)" \
+          echo
+          echo "Clang version:"
+
+          clang --version
+
+          echo
+          echo "Kernel directory:"
+          pwd
+
+      - name: Prepare Defconfig
+        run: |
+          set -e
+
+          KERNEL_DIR="$(cat "$GITHUB_WORKSPACE/kernel_dir.txt")"
+
+          cd "$KERNEL_DIR"
+
+          export ARCH=arm64
+          export SUBARCH=arm64
+
+          export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
+
+          export CC=clang
+          export LLVM=1
+          export LLVM_IAS=1
+
+          echo "======================================"
+          echo " PREPARING DEFCONFIG"
+          echo "======================================"
+
+          echo
+          echo "Running GTA9 defconfig..."
+
+          make gta9_00_defconfig
+
+          echo
+          echo "Enabling KernelSU..."
+
+          ./scripts/config --enable CONFIG_KSU
+
+          echo
+          echo "Refreshing configuration..."
+
+          make olddefconfig
+
+          echo
+          echo "KernelSU configuration:"
+
+          grep '^CONFIG_KSU=' .config || true
+
+          echo
+          echo "Architecture:"
+
+          grep '^CONFIG_ARCH_MEDIATEK=' .config || true
+
+          echo
+          echo "GTA9 project:"
+
+          grep '^CONFIG_CUSTOM_PROJECT_OT11=' .config || true
+
+          echo
+          echo "Defconfig preparation complete."
+
+      - name: Build Kernel
+        run: |
+          set -e
+
+          KERNEL_DIR="$(cat "$GITHUB_WORKSPACE/kernel_dir.txt")"
+
+          cd "$KERNEL_DIR"
+
+          export ARCH=arm64
+          export SUBARCH=arm64
+
+          export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
+
+          export CC=clang
+          export LLVM=1
+          export LLVM_IAS=1
+
+          echo "======================================"
+          echo " STARTING KERNEL BUILD"
+          echo "======================================"
+
+          echo
+          echo "Kernel source:"
+          pwd
+
+          echo
+          echo "Kernel version:"
+          make kernelversion
+
+          echo
+          echo "Starting compilation..."
+
+          make \
+            -j"$(nproc)" \
             CC=clang \
             LLVM=1 \
             LLVM_IAS=1 \
             Image.gz \
             dtbs
 
+          echo
+          echo "======================================"
+          echo " BUILD FINISHED"
+          echo "======================================"
+
       - name: Show Build Output
         if: always()
         run: |
-          echo "=== Kernel output ==="
-          ls -lh arch/arm64/boot/ || true
+          KERNEL_DIR="$(cat "$GITHUB_WORKSPACE/kernel_dir.txt" 2>/dev/null || true)"
 
-          echo "=== DTB output ==="
-          find arch/arm64/boot/dts -type f \
-            \( -name "*.dtb" -o -name "*.dtbo" \) \
-            -exec ls -lh {} \; || true
+          if [ -z "$KERNEL_DIR" ]; then
+            echo "Kernel directory tidak tersedia."
+            exit 0
+          fi
+
+          echo "======================================"
+          echo " BUILD OUTPUT"
+          echo "======================================"
+
+          echo
+          echo "Kernel directory:"
+          echo "$KERNEL_DIR"
+
+          echo
+          echo "ARM64 boot directory:"
+
+          ls -lah "$KERNEL_DIR/arch/arm64/boot/" \
+            2>/dev/null || true
+
+          echo
+          echo "Image files:"
+
+          find "$KERNEL_DIR/arch/arm64/boot" \
+            -maxdepth 1 \
+            -type f \
+            \( \
+              -name "Image" \
+              -o -name "Image.gz" \
+              -o -name "Image.lz4" \
+            \) \
+            -exec ls -lh {} \; \
+            2>/dev/null || true
+
+          echo
+          echo "DTB / DTBO files:"
+
+          find "$KERNEL_DIR/arch/arm64/boot/dts" \
+            -type f \
+            \( \
+              -name "*.dtb" \
+              -o -name "*.dtbo" \
+            \) \
+            -exec ls -lh {} \; \
+            2>/dev/null || true
 
       - name: Upload Kernel Artifacts
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: samsung-x110-kernel-kernelsu
+          name: samsung-x110-kernelsu-kernel
           path: |
-            arch/arm64/boot/Image
-            arch/arm64/boot/Image.gz
-            arch/arm64/boot/dts/**/*.dtb
-            arch/arm64/boot/dts/**/*.dtbo
+            ${{ github.workspace }}/**/arch/arm64/boot/Image
+            ${{ github.workspace }}/**/arch/arm64/boot/Image.gz
+            ${{ github.workspace }}/**/arch/arm64/boot/dts/**/*.dtb
+            ${{ github.workspace }}/**/arch/arm64/boot/dts/**/*.dtbo
+          if-no-files-found: error
