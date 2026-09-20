@@ -308,7 +308,7 @@ jobs:
       #
       #    HOSTCC/GCC TIDAK dipaksa lewat command line.
       # ============================================================
-      - name: Execute Kernel Build
+      - name: Execute Kernel Build - DTC Trace
         env:
           ARCH: arm64
           CROSS_COMPILE: aarch64-linux-gnu-
@@ -326,25 +326,149 @@ jobs:
           KCFLAGS: "-Wno-error"
 
         run: |
-          set -eux
+          set +e
 
           cd gta9
 
-          chmod +x build/build.sh
-
           echo "========================================================"
-          echo " DTC-LOCK BUILD"
-          echo "========================================================"
-          echo " DTC=./scripts/dtc/dtc"
-          echo " HOSTCC is environment only"
-          echo " HOSTCXX is environment only"
-          echo " HOSTLD is environment only"
+          echo " PHASE 1: NORMAL BUILD"
           echo "========================================================"
 
           bash ./build/build.sh \
             LLVM_IAS=1 \
             DTC=./scripts/dtc/dtc \
             -j"$(($(nproc)-1))"
+
+          BUILD_RC=$?
+
+          echo
+          echo "========================================================"
+          echo " NORMAL BUILD EXIT CODE: $BUILD_RC"
+          echo "========================================================"
+
+          echo
+          echo "========================================================"
+          echo " PHASE 2: TARGETED DTB TRACE"
+          echo "========================================================"
+
+          echo
+          echo "Target:"
+          echo "arch/arm64/boot/dts/mediatek/mt6789.dtb"
+
+          echo
+          echo "DTC:"
+          echo "./scripts/dtc/dtc"
+
+          echo
+          echo "HOSTCC:"
+          echo "$HOSTCC"
+
+          echo
+          echo "HOSTCXX:"
+          echo "$HOSTCXX"
+
+          echo
+          echo "HOSTLD:"
+          echo "$HOSTLD"
+
+          echo
+          echo "PATH:"
+          printf '%s\n' "$PATH"
+
+          echo
+          echo "========================================================"
+          echo " CHECK DTC BINARY"
+          echo "========================================================"
+
+          if [ -x "out/kernel-5.10/scripts/dtc/dtc" ]; then
+            /usr/bin/ls -lh out/kernel-5.10/scripts/dtc/dtc || true
+            /usr/bin/file out/kernel-5.10/scripts/dtc/dtc || true
+          else
+            echo "DTC binary not found"
+          fi
+
+          echo
+          echo "========================================================"
+          echo " TARGETED MAKE V=1"
+          echo "========================================================"
+
+          cd out/kernel-5.10
+
+          make \
+            V=1 \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            DEPMOD=depmod \
+            DTC=./scripts/dtc/dtc \
+            ARCH=arm64 \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
+            HOSTCC=/usr/bin/gcc \
+            HOSTCXX=/usr/bin/g++ \
+            HOSTLD=/usr/bin/gcc \
+            -j1 \
+            arch/arm64/boot/dts/mediatek/mt6789.dtb
+
+          TRACE_RC=$?
+
+          echo
+          echo "========================================================"
+          echo " TARGETED DTB EXIT CODE: $TRACE_RC"
+          echo "========================================================"
+
+          echo
+          echo "========================================================"
+          echo " SEARCH .cmd FILE"
+          echo "========================================================"
+
+          find arch/arm64/boot/dts/mediatek \
+            -maxdepth 1 \
+            -type f \
+            -name '.*mt6789*.cmd' \
+            -print 2>/dev/null || true
+
+          echo
+          echo "========================================================"
+          echo " DTB CMD CONTENT"
+          echo "========================================================"
+
+          CMD_FILE="arch/arm64/boot/dts/mediatek/.mt6789.dtb.cmd"
+
+          if [ -f "$CMD_FILE" ]; then
+            /usr/bin/sed -n '1,240p' "$CMD_FILE"
+          else
+            echo "No .mt6789.dtb.cmd found"
+          fi
+
+          echo
+          echo "========================================================"
+          echo " ASSEMBLER / TOOLCHAIN CHECK"
+          echo "========================================================"
+
+          command -v gcc || true
+          command -v as || true
+          command -v clang || true
+          command -v aarch64-linux-gnu-gcc || true
+          command -v aarch64-linux-gnu-as || true
+
+          echo
+          echo "--- gcc ---"
+          gcc --version | head -n 2 || true
+
+          echo
+          echo "--- host as ---"
+          as --version | head -n 2 || true
+
+          echo
+          echo "--- target as ---"
+          aarch64-linux-gnu-as --version | head -n 2 || true
+
+          echo
+          echo "========================================================"
+          echo " PHASE COMPLETE"
+          echo "========================================================"
+
+          exit "$BUILD_RC"
 
       # ============================================================
       # 8. INSPECT OUTPUT
