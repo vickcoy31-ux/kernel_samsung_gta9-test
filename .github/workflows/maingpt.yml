@@ -1,26 +1,32 @@
-name: PROJECT-OPICK-X110-DTC-LOCK
+name: GTA9 X110 Kernel Build - DTB Trace
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+
+permissions:
+  contents: read
+
+env:
+  TZ: Asia/Jakarta
+  CLANG_VERSION: clang-r416183b
+  CLANG_URL: https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android12L-gsi/clang-r416183b.tar.gz
 
 jobs:
   build:
     runs-on: ubuntu-22.04
 
-    env:
-      TZ: Asia/Jakarta
-      CLANG_VERSION: "clang-r416183b"
-      CLANG_URL: "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android12L-gsi/clang-r416183b.tar.gz"
-
     steps:
-
       # ============================================================
       # 1. HOST DEPENDENCIES
-      #    Sengaja mengikuti jalur build panjang yang sudah terbukti.
-      #    JANGAN menambah device-tree-compiler di sini.
       # ============================================================
-      - name: Install Host Dependencies
+      - name: 1. Install Host Dependencies
+        shell: bash
         run: |
+          set -eux
           sudo apt-get update
           sudo apt-get install -y \
             bc \
@@ -54,8 +60,11 @@ jobs:
       # ============================================================
       # 2. CLONE SOURCE
       # ============================================================
-      - name: Clone GTA9 Source
+      - name: 2. Clone GTA9 Source
+        shell: bash
         run: |
+          set -eux
+
           git clone \
             --depth=1 \
             --branch 15.0 \
@@ -67,41 +76,46 @@ jobs:
           git submodule update --init --depth=1
 
       # ============================================================
-      # 3. ANDROID CLANG
+      # 3. CACHE AND DOWNLOAD HISTORICAL ANDROID CLANG
       # ============================================================
-      - name: Cache Android Clang
-        id: cache-clang
-        uses: actions/cache@v3
+      - name: 3. Cache Android Clang
+        uses: actions/cache@v4
         with:
-          path: gta9/prebuilts-master/clang/host/linux-x86/${{ env.CLANG_VERSION }}
+          path: gta9/prebuilts-master/clang/host/linux-x86/clang-r416183b
           key: clang-${{ env.CLANG_VERSION }}
 
-      - name: Download Android Clang
-        if: steps.cache-clang.outputs.cache-hit != 'true'
+      - name: 4. Download Android Clang
+        shell: bash
         run: |
-          mkdir -p gta9/prebuilts-master/clang/host/linux-x86
+          set -eux
 
-          curl -L --fail \
-            -o gta9/prebuilts-master/clang/host/linux-x86/${{ env.CLANG_VERSION }}.tar.gz \
-            "${{ env.CLANG_URL }}"
+          CLANG_DIR="gta9/prebuilts-master/clang/host/linux-x86/${CLANG_VERSION}"
+          ARCHIVE="gta9/prebuilts-master/clang/host/linux-x86/${CLANG_VERSION}.tar.gz"
 
-          mkdir -p gta9/prebuilts-master/clang/host/linux-x86/${{ env.CLANG_VERSION }}
+          mkdir -p "$(dirname "$CLANG_DIR")"
 
-          tar -xzf \
-            gta9/prebuilts-master/clang/host/linux-x86/${{ env.CLANG_VERSION }}.tar.gz \
-            -C gta9/prebuilts-master/clang/host/linux-x86/${{ env.CLANG_VERSION }}
+          if [ ! -x "$CLANG_DIR/bin/clang" ]; then
+            rm -f "$ARCHIVE"
+
+            curl -L --fail \
+              -o "$ARCHIVE" \
+              "$CLANG_URL"
+
+            mkdir -p "$CLANG_DIR"
+            tar -xzf "$ARCHIVE" -C "$CLANG_DIR"
+          fi
+
+          test -x "$CLANG_DIR/bin/clang"
+          test -x "$CLANG_DIR/bin/clang++"
+          test -x "$CLANG_DIR/bin/ld.lld"
 
       # ============================================================
-      # 4. RESTORE THE HISTORICAL BUILD LAYOUT
-      #
-      #    Ini sengaja mempertahankan pola run panjang:
-      #      kernel-5.10 -> .
-      #      build       -> setup/kernel/build
-      #
-      #    Wrapper clang -> GCC juga dipertahankan karena konfigurasi
-      #    inilah yang berhasil melewati fixdep, Kconfig, dan mencapai DTC.
+      # 4. RESTORE THE HISTORICAL TOOLCHAIN LAYOUT
+      #    Keep this path because the previous long build passed
+      #    host tools, Kconfig, ABI, and DTC host compilation.
       # ============================================================
-      - name: Restore Historical Toolchain Layout
+      - name: 5. Restore Historical Toolchain Layout
+        shell: bash
         run: |
           set -eux
 
@@ -120,13 +134,13 @@ jobs:
           # ----------------------------------------------------------
           cat > "$TOOL_DIR/clang" <<'EOF'
           #!/bin/bash
-          ARGS=$(echo "$@" |
+          set -e
+          ARGS=$(printf '%s\n' "$*" |
             sed 's/--rtlib=compiler-rt//g' |
             sed 's/-nostdinc//g' |
             sed 's/-isystem [^ ]*//g')
           exec /usr/bin/gcc $ARGS
           EOF
-
           chmod +x "$TOOL_DIR/clang"
 
           # ----------------------------------------------------------
@@ -134,13 +148,13 @@ jobs:
           # ----------------------------------------------------------
           cat > "$TOOL_DIR/clang++" <<'EOF'
           #!/bin/bash
-          ARGS=$(echo "$@" |
+          set -e
+          ARGS=$(printf '%s\n' "$*" |
             sed 's/--rtlib=compiler-rt//g' |
             sed 's/-nostdinc//g' |
             sed 's/-isystem [^ ]*//g')
           exec /usr/bin/g++ $ARGS
           EOF
-
           chmod +x "$TOOL_DIR/clang++"
 
           # ----------------------------------------------------------
@@ -150,7 +164,7 @@ jobs:
           ln -sf lld "$TOOL_DIR/ld.lld"
 
           # ----------------------------------------------------------
-          # Keep Samsung helper PATH happy
+          # Samsung helper PATH
           # ----------------------------------------------------------
           ln -sf /usr/bin/realpath "$TOOL_DIR/realpath"
 
@@ -175,7 +189,6 @@ jobs:
           date
           dirname
           du
-          env
           expr
           find
           grep
@@ -198,7 +211,6 @@ jobs:
           tail
           tar
           test
-          touch
           tr
           uname
           uniq
@@ -228,10 +240,12 @@ jobs:
           COMPAT_DIR="$CLANG_ROOT/compat-libs"
           mkdir -p "$COMPAT_DIR"
 
-          SYSTEM_LIBXML="$(ldconfig -p |
+          SYSTEM_LIBXML="$(
+            ldconfig -p |
             grep 'libxml2.so.2 ' |
             head -n 1 |
-            sed 's/.*=> //')"
+            sed 's/.*=> //'
+          )"
 
           if [ -n "$SYSTEM_LIBXML" ]; then
             ln -sf "$SYSTEM_LIBXML" \
@@ -241,7 +255,8 @@ jobs:
       # ============================================================
       # 5. GENERATE BUILD CONFIG
       # ============================================================
-      - name: Generate Build Config
+      - name: 6. Generate Build Config
+        shell: bash
         run: |
           set -eux
 
@@ -259,76 +274,86 @@ jobs:
             -m user \
             -o out/build.config
 
+          test -s out/build.config
+
       # ============================================================
-      # 6. ENVIRONMENT
+      # 6. SET BUILD ENVIRONMENT
       #
-      #    Perhatikan:
-      #    HOSTCC/HOSTCXX/HOSTLD tetap ada sebagai environment,
-      #    tetapi TIDAK kita kirim lagi sebagai argumen langsung
-      #    ke build.sh.
-      #
-      #    Ini mengembalikan pola historical run.
+      # IMPORTANT:
+      # The previous workflow wrote literal "$PATH" into GITHUB_ENV.
+      # Expand it here so /usr/bin, /bin, etc. remain available.
       # ============================================================
-      - name: Set Build Environment
+      - name: 7. Set Build Environment
+        shell: bash
         run: |
           set -eux
 
           cd gta9
 
           CLANG_ROOT="$PWD/prebuilts-master/clang/host/linux-x86/${CLANG_VERSION}"
+          TOOL_DIR="$PWD/build/build-tools/path/linux-x86"
 
           sed -i \
             "s#^CLANG_PREBUILT_BIN=.*#CLANG_PREBUILT_BIN=$CLANG_ROOT/bin#" \
             out/build.config
 
-          echo "PATH=$PWD/build/build-tools/path/linux-x86:\$PATH" >> "$GITHUB_ENV"
-          echo "LD_LIBRARY_PATH=$CLANG_ROOT/compat-libs:\$LD_LIBRARY_PATH" >> "$GITHUB_ENV"
+          # Preserve the runner's real PATH.
+          echo "PATH=$TOOL_DIR:$CLANG_ROOT/bin:$PATH" >> "$GITHUB_ENV"
+
+          # Preserve any existing LD_LIBRARY_PATH.
+          echo "LD_LIBRARY_PATH=$CLANG_ROOT/compat-libs:$LD_LIBRARY_PATH" >> "$GITHUB_ENV"
 
           echo "C_INCLUDE_PATH=/usr/include/x86_64-linux-gnu:/usr/include" >> "$GITHUB_ENV"
           echo "CPLUS_INCLUDE_PATH=/usr/include/x86_64-linux-gnu:/usr/include" >> "$GITHUB_ENV"
 
+          echo "ARCH=arm64" >> "$GITHUB_ENV"
+          echo "CROSS_COMPILE=aarch64-linux-gnu-" >> "$GITHUB_ENV"
+          echo "CROSS_COMPILE_COMPAT=arm-linux-gnueabi-" >> "$GITHUB_ENV"
+
+          echo "LLVM=1" >> "$GITHUB_ENV"
+          echo "LLVM_IAS=1" >> "$GITHUB_ENV"
+
+          # Keep the environment form that successfully reached DTC.
+          echo "HOSTCC=/usr/bin/gcc" >> "$GITHUB_ENV"
+          echo "HOSTCXX=/usr/bin/g++" >> "$GITHUB_ENV"
+          echo "HOSTLD=/usr/bin/gcc" >> "$GITHUB_ENV"
+
+          echo "OUT_DIR=out" >> "$GITHUB_ENV"
+          echo "DIST_DIR=out" >> "$GITHUB_ENV"
+          echo "BUILD_CONFIG=out/build.config" >> "$GITHUB_ENV"
+          echo "KCFLAGS=-Wno-error" >> "$GITHUB_ENV"
+
+          echo "===== EFFECTIVE PATH ====="
+          printf '%s\n' "$TOOL_DIR:$CLANG_ROOT/bin:$PATH"
+
+          echo "===== CLANG ====="
+          "$CLANG_ROOT/bin/clang" --version | head -n 2
+
+          echo "===== HOST GCC ====="
+          /usr/bin/gcc --version | head -n 2
+
       # ============================================================
-      # 7. KERNEL BUILD
+      # 7. BUILD + DTB TRACE
       #
-      #    INI PERUBAHAN UTAMA:
+      # The normal build is kept first.
       #
-      #      sebelumnya:
-      #        DTC=dtc
-      #
-      #      sekarang:
-      #        DTC=./scripts/dtc/dtc
-      #
-      #    Karena final make berada di:
-      #      out/kernel-5.10
-      #
-      #    maka:
-      #      ./scripts/dtc/dtc
-      #
-      #    menunjuk ke DTC yang baru saja dibangun oleh Kbuild.
-      #
-      #    HOSTCC/GCC TIDAK dipaksa lewat command line.
+      # If it fails, the targeted DTB build is run from the SOURCE
+      # TREE with O=out/kernel-5.10. This avoids the previous mistake
+      # where the target became:
+      # arch/arm64/boot/dts/arch/arm64/boot/dts/...
       # ============================================================
-      - name: Execute Kernel Build - DTC Trace
-        env:
-          ARCH: arm64
-          CROSS_COMPILE: aarch64-linux-gnu-
-          CROSS_COMPILE_COMPAT: arm-linux-gnueabi-
-          LLVM: "1"
-          LLVM_IAS: "1"
-          OUT_DIR: out
-          DIST_DIR: out
-          BUILD_CONFIG: out/build.config
-
-          HOSTCC: /usr/bin/gcc
-          HOSTCXX: /usr/bin/g++
-          HOSTLD: /usr/bin/gcc
-
-          KCFLAGS: "-Wno-error"
-
+      - name: 8. Execute Kernel Build - Normal + DTB Trace
+        id: kernel_build
+        shell: bash
         run: |
           set +e
 
           cd gta9
+
+          OUT="$PWD/out/kernel-5.10"
+          TARGET="arch/arm64/boot/dts/mediatek/mt6789.dtb"
+          DTB="$OUT/$TARGET"
+          CMD_FILE="$OUT/arch/arm64/boot/dts/mediatek/.mt6789.dtb.cmd"
 
           echo "========================================================"
           echo " PHASE 1: NORMAL BUILD"
@@ -336,7 +361,6 @@ jobs:
 
           bash ./build/build.sh \
             LLVM_IAS=1 \
-            DTC=./scripts/dtc/dtc \
             -j"$(($(nproc)-1))"
 
           BUILD_RC=$?
@@ -346,136 +370,176 @@ jobs:
           echo " NORMAL BUILD EXIT CODE: $BUILD_RC"
           echo "========================================================"
 
-          echo
-          echo "========================================================"
-          echo " PHASE 2: TARGETED DTB TRACE"
-          echo "========================================================"
+          if [ "$BUILD_RC" -ne 0 ]; then
+            echo
+            echo "========================================================"
+            echo " PHASE 2: TARGETED DTB TRACE"
+            echo "========================================================"
 
-          echo
-          echo "Target:"
-          echo "arch/arm64/boot/dts/mediatek/mt6789.dtb"
+            echo "Source tree : $PWD"
+            echo "Output tree : $OUT"
+            echo "Target      : $TARGET"
+            echo "DTC         : $OUT/scripts/dtc/dtc"
+            echo "HOSTCC      : ${HOSTCC:-unset}"
+            echo "HOSTCXX     : ${HOSTCXX:-unset}"
+            echo "HOSTLD      : ${HOSTLD:-unset}"
 
-          echo
-          echo "DTC:"
-          echo "./scripts/dtc/dtc"
+            echo
+            echo "========================================================"
+            echo " TOOLCHAIN PATH CHECK"
+            echo "========================================================"
 
-          echo
-          echo "HOSTCC:"
-          echo "$HOSTCC"
+            printf 'PATH=%s\n' "$PATH"
+            type -a gcc || true
+            type -a as || true
+            type -a clang || true
+            type -a aarch64-linux-gnu-gcc || true
+            type -a aarch64-linux-gnu-as || true
 
-          echo
-          echo "HOSTCXX:"
-          echo "$HOSTCXX"
+            echo
+            echo "--- gcc ---"
+            /usr/bin/gcc --version | head -n 2
 
-          echo
-          echo "HOSTLD:"
-          echo "$HOSTLD"
+            echo
+            echo "--- host as ---"
+            /usr/bin/as --version | head -n 2
 
-          echo
-          echo "PATH:"
-          printf '%s\n' "$PATH"
+            echo
+            echo "--- target as ---"
+            aarch64-linux-gnu-as --version | head -n 2
 
-          echo
-          echo "========================================================"
-          echo " CHECK DTC BINARY"
-          echo "========================================================"
+            echo
+            echo "--- Android clang ---"
+            "$(dirname "$(type -P clang)")/clang" --version 2>/dev/null | head -n 2 || \
+              clang --version | head -n 2
 
-          if [ -x "out/kernel-5.10/scripts/dtc/dtc" ]; then
-            /usr/bin/ls -lh out/kernel-5.10/scripts/dtc/dtc || true
-            /usr/bin/file out/kernel-5.10/scripts/dtc/dtc || true
-          else
-            echo "DTC binary not found"
+            echo
+            echo "========================================================"
+            echo " DTC SOURCE RECIPE"
+            echo "========================================================"
+
+            sed -n '350,405p' scripts/Makefile.lib
+
+            echo
+            echo "========================================================"
+            echo " DTC VARIABLE FROM MAKE"
+            echo "========================================================"
+
+            make -s \
+              O="$OUT" \
+              LLVM=1 \
+              LLVM_IAS=1 \
+              HOSTCC=/usr/bin/gcc \
+              HOSTCXX=/usr/bin/g++ \
+              HOSTLD=/usr/bin/gcc \
+              DTC="$OUT/scripts/dtc/dtc" \
+              ARCH=arm64 \
+              CROSS_COMPILE=aarch64-linux-gnu- \
+              CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
+              -pn 2>/dev/null |
+              sed -n \
+                -e '/^cmd_dtc[[:space:]]*=/,/^$/p' \
+                -e '/^dtc_cpp_flags[[:space:]]*=/p' \
+              || true
+
+            # Force a fresh DTB recipe for the trace.
+            rm -f "$DTB" "$CMD_FILE"
+
+            echo
+            echo "========================================================"
+            echo " TARGETED DTB DRY RUN (V=1 -n)"
+            echo "========================================================"
+
+            make \
+              O="$OUT" \
+              V=1 \
+              -n \
+              LLVM=1 \
+              LLVM_IAS=1 \
+              DEPMOD=depmod \
+              DTC="$OUT/scripts/dtc/dtc" \
+              ARCH=arm64 \
+              CROSS_COMPILE=aarch64-linux-gnu- \
+              CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
+              HOSTCC=/usr/bin/gcc \
+              HOSTCXX=/usr/bin/g++ \
+              HOSTLD=/usr/bin/gcc \
+              "$TARGET"
+
+            echo
+            echo "========================================================"
+            echo " TARGETED DTB REAL BUILD (V=1 -j1)"
+            echo "========================================================"
+
+            set -o pipefail
+            make \
+              O="$OUT" \
+              V=1 \
+              -j1 \
+              LLVM=1 \
+              LLVM_IAS=1 \
+              DEPMOD=depmod \
+              DTC="$OUT/scripts/dtc/dtc" \
+              ARCH=arm64 \
+              CROSS_COMPILE=aarch64-linux-gnu- \
+              CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
+              HOSTCC=/usr/bin/gcc \
+              HOSTCXX=/usr/bin/g++ \
+              HOSTLD=/usr/bin/gcc \
+              "$TARGET" 2>&1 | tee dtb-trace.log
+
+            TRACE_RC=${PIPESTATUS[0]}
+            set +o pipefail
+
+            echo
+            echo "========================================================"
+            echo " TARGETED DTB EXIT CODE: $TRACE_RC"
+            echo "========================================================"
+
+            echo
+            echo "========================================================"
+            echo " DTB CMD FILE"
+            echo "========================================================"
+
+            if [ -f "$CMD_FILE" ]; then
+              sed -n '1,240p' "$CMD_FILE"
+            else
+              echo "No .mt6789.dtb.cmd found"
+            fi
+
+            echo
+            echo "========================================================"
+            echo " DTB-RELATED FILES"
+            echo "========================================================"
+
+            find "$OUT/arch/arm64/boot/dts/mediatek" \
+              -maxdepth 1 \
+              -type f \
+              \( -name '*mt6789*' -o -name '.*mt6789*.cmd' \) \
+              -print \
+              2>/dev/null || true
           fi
 
           echo
           echo "========================================================"
-          echo " TARGETED MAKE V=1"
+          echo " BUILD RESULT"
           echo "========================================================"
+          echo "BUILD_RC=$BUILD_RC"
 
-          cd out/kernel-5.10
+          printf 'BUILD_RC=%s\n' "$BUILD_RC" > build-result.txt
 
-          make \
-            V=1 \
-            LLVM=1 \
-            LLVM_IAS=1 \
-            DEPMOD=depmod \
-            DTC=./scripts/dtc/dtc \
-            ARCH=arm64 \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
-            HOSTCC=/usr/bin/gcc \
-            HOSTCXX=/usr/bin/g++ \
-            HOSTLD=/usr/bin/gcc \
-            -j1 \
-            arch/arm64/boot/dts/mediatek/mt6789.dtb
+          # This step deliberately stays successful so diagnostics and
+          # artifacts are uploaded even when the kernel build fails.
+          echo "build_rc=$BUILD_RC" >> "$GITHUB_OUTPUT"
 
-          TRACE_RC=$?
-
-          echo
-          echo "========================================================"
-          echo " TARGETED DTB EXIT CODE: $TRACE_RC"
-          echo "========================================================"
-
-          echo
-          echo "========================================================"
-          echo " SEARCH .cmd FILE"
-          echo "========================================================"
-
-          find arch/arm64/boot/dts/mediatek \
-            -maxdepth 1 \
-            -type f \
-            -name '.*mt6789*.cmd' \
-            -print 2>/dev/null || true
-
-          echo
-          echo "========================================================"
-          echo " DTB CMD CONTENT"
-          echo "========================================================"
-
-          CMD_FILE="arch/arm64/boot/dts/mediatek/.mt6789.dtb.cmd"
-
-          if [ -f "$CMD_FILE" ]; then
-            /usr/bin/sed -n '1,240p' "$CMD_FILE"
-          else
-            echo "No .mt6789.dtb.cmd found"
-          fi
-
-          echo
-          echo "========================================================"
-          echo " ASSEMBLER / TOOLCHAIN CHECK"
-          echo "========================================================"
-
-          command -v gcc || true
-          command -v as || true
-          command -v clang || true
-          command -v aarch64-linux-gnu-gcc || true
-          command -v aarch64-linux-gnu-as || true
-
-          echo
-          echo "--- gcc ---"
-          gcc --version | head -n 2 || true
-
-          echo
-          echo "--- host as ---"
-          as --version | head -n 2 || true
-
-          echo
-          echo "--- target as ---"
-          aarch64-linux-gnu-as --version | head -n 2 || true
-
-          echo
-          echo "========================================================"
-          echo " PHASE COMPLETE"
-          echo "========================================================"
-
-          exit "$BUILD_RC"
+          exit 0
 
       # ============================================================
       # 8. INSPECT OUTPUT
-      #    Tidak menganggap HDRINST sebagai bukti sukses.
       # ============================================================
-      - name: Inspect Final Output
+      - name: 9. Inspect Final Output
         if: always()
+        shell: bash
         run: |
           set +e
 
@@ -489,33 +553,46 @@ jobs:
           echo "--- Image / DTB / DTBO ---"
           find out \
             -type f \
-            \( \
-              -name "Image" \
-              -o -name "Image.gz" \
-              -o -name "vmlinux" \
-              -o -name "*.dtb" \
-              -o -name "*.dtbo" \
-            \) \
-            -print
+            \( -name 'Image' -o -name 'Image.gz' -o -name '*.dtb' -o -name '*.dtbo' \) \
+            -print \
+            -exec /usr/bin/ls -lh {} \; \
+            2>/dev/null || true
 
           echo
           echo "--- DTC binary ---"
-          if [ -x out/kernel-5.10/scripts/dtc/dtc ]; then
-            ls -lh out/kernel-5.10/scripts/dtc/dtc
-            file out/kernel-5.10/scripts/dtc/dtc
+          if [ -x "out/kernel-5.10/scripts/dtc/dtc" ]; then
+            /usr/bin/ls -lh out/kernel-5.10/scripts/dtc/dtc
+            /usr/bin/file out/kernel-5.10/scripts/dtc/dtc
           else
             echo "DTC binary not found"
           fi
 
           echo
           echo "--- kernel release ---"
-          cat out/kernel-5.10/include/config/kernel.release 2>/dev/null || true
+          if [ -f "out/kernel-5.10/include/config/kernel.release" ]; then
+            cat out/kernel-5.10/include/config/kernel.release
+          else
+            echo "kernel.release not found"
+          fi
+
+          echo
+          echo "--- important config values ---"
+          if [ -f "out/kernel-5.10/.config" ]; then
+            grep -E \
+              '^(CONFIG_LOCALVERSION|CONFIG_UNAME_OVERRIDE|CONFIG_UNAME_OVERRIDE_STRING)=' \
+              out/kernel-5.10/.config || true
+          fi
+
+          echo
+          echo "--- build result ---"
+          cat build-result.txt 2>/dev/null || true
 
       # ============================================================
-      # 9. PACKAGE ONLY WHAT ACTUALLY EXISTS
+      # 9. PACKAGE WITHOUT CREATING A FAKE KERNEL ARTIFACT
       # ============================================================
-      - name: Package Results
+      - name: 10. Package Results
         if: always()
+        shell: bash
         run: |
           set -eux
 
@@ -524,31 +601,89 @@ jobs:
           rm -rf package
           mkdir -p package
 
-          find out -type f -name 'Image.gz' \
-            -exec cp {} package/ \; 2>/dev/null || true
+          find out \
+            -type f \
+            \( -name 'Image.gz' -o -name '*.dtb' -o -name '*.dtbo' \) \
+            -exec cp -f {} package/ \; \
+            2>/dev/null || true
 
-          find out -type f -name '*.dtb' \
-            -exec cp {} package/ \; 2>/dev/null || true
+          cp -f out/build.config package/ 2>/dev/null || true
+          cp -f out/kernel-5.10/.config package/config 2>/dev/null || true
+          cp -f build-result.txt package/ 2>/dev/null || true
+          cp -f dtb-trace.log package/ 2>/dev/null || true
 
-          find out -type f -name '*.dtbo' \
-            -exec cp {} package/ \; 2>/dev/null || true
+          CMD_FILE="out/kernel-5.10/arch/arm64/boot/dts/mediatek/.mt6789.dtb.cmd"
+          if [ -f "$CMD_FILE" ]; then
+            cp -f "$CMD_FILE" package/mt6789.dtb.cmd
+          fi
 
-          cp out/build.config package/ 2>/dev/null || true
-          cp out/kernel-5.10/.config package/config 2>/dev/null || true
+          if [ -s "package/Image.gz" ]; then
+            echo "status=KERNEL_IMAGE_PRESENT" > package/BUILD_STATUS.txt
+            echo "Image.gz found and packaged." >> package/BUILD_STATUS.txt
 
-          cd package
+            /usr/bin/file package/Image.gz
+            /usr/bin/ls -lh package/Image.gz
 
-          zip -r ../kernel-gta9-x110.zip .
+            (
+              cd package
+              zip -r ../kernel-gta9-x110.zip .
+            )
+          else
+            echo "status=KERNEL_IMAGE_MISSING" > package/BUILD_STATUS.txt
+            echo "Image.gz was not produced." >> package/BUILD_STATUS.txt
+            echo "This is a diagnostic artifact, not a flashable kernel." >> package/BUILD_STATUS.txt
+
+            (
+              cd package
+              zip -r ../diagnostic-gta9-x110.zip .
+            )
+          fi
 
       # ============================================================
-      # 10. UPLOAD
+      # 10. UPLOAD ARTIFACT
       # ============================================================
-      - name: Upload Results
+      - name: 11. Upload Results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-gta9-x110-dtc-lock
+          name: gta9-x110-results
           path: |
             gta9/kernel-gta9-x110.zip
-          retention-days: 7
-          if-no-files-found: warn
+            gta9/diagnostic-gta9-x110.zip
+          if-no-files-found: error
+
+      # ============================================================
+      # 11. FINAL JOB STATUS
+      # ============================================================
+      - name: 12. Fail Job When Kernel Build Failed
+        if: always()
+        shell: bash
+        run: |
+          set -eux
+
+          cd gta9
+
+          BUILD_RC=0
+          if [ -f build-result.txt ]; then
+            BUILD_RC="$(sed -n 's/^BUILD_RC=//p' build-result.txt | tail -n 1)"
+          fi
+
+          if [ -z "$BUILD_RC" ]; then
+            echo "Unable to determine BUILD_RC"
+            exit 1
+          fi
+
+          echo "Final BUILD_RC=$BUILD_RC"
+
+          if [ "$BUILD_RC" -ne 0 ]; then
+            echo "Kernel build failed."
+            echo "Diagnostic artifact has been uploaded."
+            exit "$BUILD_RC"
+          fi
+
+          if [ ! -s "kernel-gta9-x110.zip" ]; then
+            echo "Build returned success, but kernel-gta9-x110.zip is missing."
+            exit 1
+          fi
+
+          echo "Kernel build completed and Image.gz was packaged."
